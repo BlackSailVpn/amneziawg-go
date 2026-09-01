@@ -1,5 +1,19 @@
 # Go Implementation of AmneziaWG
 
+## TurboButton maintenance patch
+
+This fork is pinned to upstream `v3.0.20260805`
+(`08d68cdae27762c3e07f36bbb12d2bad32f81926`) and deliberately does **not**
+include the incompatible AWG 3.1 migration. Release
+`v3.0.20260805-turbobutton.1` adds a finite, per-device message-buffer budget.
+Packet workers use a non-blocking acquisition path and drop a newly received
+packet before it is put into a crypto queue when that budget is exhausted.
+
+The public `Device.SetMessageBufferPoolLimit` API configures the budget before
+`Device.Up`; `Device.MessageBufferPoolStats` exposes its current use and drop
+counters. This is a production memory-safety patch for TurboButton and is kept
+minimal to make comparison with the upstream base straightforward.
+
 AmneziaWG is a contemporary version of the WireGuard protocol. It's a fork of WireGuard-Go and offers protection against detection by Deep Packet Inspection (DPI) systems. At the same time, it retains the simplified architecture and high performance of the original.
 
 The precursor, WireGuard, is known for its efficiency but had issues with detection due to its distinctive packet signatures.
