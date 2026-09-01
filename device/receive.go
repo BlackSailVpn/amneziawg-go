@@ -195,6 +195,13 @@ func (device *Device) RoutineReceiveIncoming(
 
 				// create work element
 				peer := value.peer
+				replacement, ok := device.tryGetMessageBuffer()
+				if !ok {
+					// Do not extend the crypto queue when the explicit memory
+					// budget is exhausted; retain this receive buffer instead.
+					device.metrics.inboundDropped.Add(1)
+					continue
+				}
 				elem := device.GetInboundElement()
 				elem.packet = packet
 				elem.buffer = bufsArrs[i]
@@ -210,7 +217,7 @@ func (device *Device) RoutineReceiveIncoming(
 					elemsByPeer[peer] = elemsForPeer
 				}
 				elemsForPeer.elems = append(elemsForPeer.elems, elem)
-				bufsArrs[i] = device.GetMessageBuffer()
+				bufsArrs[i] = replacement
 				bufs[i] = bufsArrs[i][:]
 				continue
 
@@ -245,6 +252,11 @@ func (device *Device) RoutineReceiveIncoming(
 				continue
 			}
 
+			replacement, ok := device.tryGetMessageBuffer()
+			if !ok {
+				device.metrics.inboundDropped.Add(1)
+				continue
+			}
 			select {
 			case device.queue.handshake.c <- QueueHandshakeElement{
 				msgType:  msgType,
@@ -252,9 +264,10 @@ func (device *Device) RoutineReceiveIncoming(
 				packet:   packet,
 				endpoint: endpoints[i],
 			}:
-				bufsArrs[i] = device.GetMessageBuffer()
+				bufsArrs[i] = replacement
 				bufs[i] = bufsArrs[i][:]
 			default:
+				device.PutMessageBuffer(replacement)
 			}
 		}
 		for peer, elemsContainer := range elemsByPeer {

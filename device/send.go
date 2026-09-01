@@ -72,6 +72,19 @@ func (device *Device) NewOutboundElement() *QueueOutboundElement {
 	return elem
 }
 
+func (device *Device) tryNewOutboundElement() (*QueueOutboundElement, bool) {
+	buffer, ok := device.tryGetMessageBuffer()
+	if !ok {
+		return nil, false
+	}
+	elem := device.GetOutboundElement()
+	elem.buffer = buffer
+	elem.nonce = 0
+	elem.padding = device.paddings.transport.Load()
+	elem.isKeepalive = false
+	return elem, true
+}
+
 // clearPointers clears elem fields that contain pointers.
 // This makes the garbage collector's life easier and
 // avoids accidentally keeping other objects around unnecessarily.
@@ -87,7 +100,11 @@ func (elem *QueueOutboundElement) clearPointers() {
  */
 func (peer *Peer) SendKeepalive() {
 	if len(peer.queue.staged) == 0 && peer.isRunning.Load() {
-		elem := peer.device.NewOutboundElement()
+		elem, ok := peer.device.tryNewOutboundElement()
+		if !ok {
+			peer.device.metrics.outboundDropped.Add(1)
+			return
+		}
 		elem.isKeepalive = true
 		elemsContainer := peer.device.GetOutboundElementsContainer()
 		elemsContainer.elems = append(elemsContainer.elems, elem)
@@ -356,8 +373,13 @@ func (device *Device) RoutineReadFromTUN() {
 				elemsForPeer = device.GetOutboundElementsContainer()
 				elemsByPeer[peer] = elemsForPeer
 			}
+			replacement, ok := device.tryNewOutboundElement()
+			if !ok {
+				device.metrics.outboundDropped.Add(1)
+				continue
+			}
 			elemsForPeer.elems = append(elemsForPeer.elems, elem)
-			elems[i] = device.NewOutboundElement()
+			elems[i] = replacement
 			bufs[i] = elems[i].buffer[:]
 		}
 

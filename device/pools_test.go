@@ -68,6 +68,21 @@ func TestWaitPool(t *testing.T) {
 	}
 }
 
+func TestWaitPoolTryGetDoesNotBlockAtLimit(t *testing.T) {
+	p := NewWaitPool(1, func() any { return new(int) })
+	first, ok := p.TryGet()
+	if !ok {
+		t.Fatal("first TryGet must acquire the only slot")
+	}
+	if _, ok := p.TryGet(); ok {
+		t.Fatal("TryGet must fail immediately when the pool is full")
+	}
+	p.Put(first)
+	if _, ok := p.TryGet(); !ok {
+		t.Fatal("TryGet must acquire a slot returned to the pool")
+	}
+}
+
 func BenchmarkWaitPool(b *testing.B) {
 	var wg sync.WaitGroup
 	var trials atomic.Int32

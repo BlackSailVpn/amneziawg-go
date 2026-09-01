@@ -75,6 +75,11 @@ type Device struct {
 		outboundElements          *WaitPool
 	}
 
+	metrics struct {
+		inboundDropped  atomic.Uint64
+		outboundDropped atomic.Uint64
+	}
+
 	queue struct {
 		encryption *outboundQueue
 		decryption *inboundQueue
