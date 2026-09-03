@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"golang.org/x/net/ipv4"
@@ -40,12 +41,45 @@ type StdNetBind struct {
 	ipv6TxOffload bool
 	ipv6RxOffload bool
 
+	// UDP GSO fallback counters are monotonic for the lifetime of this bind.
+	// They make a device/NIC incompatibility observable without logging peer data.
+	ipv4GSOFallbacks     atomic.Uint64
+	ipv4GSORetryFailures atomic.Uint64
+	ipv6GSOFallbacks     atomic.Uint64
+	ipv6GSORetryFailures atomic.Uint64
+
+	// sendBatch is a test seam. Production uses send when it is nil.
+	sendBatch func(*net.UDPConn, batchWriter, []ipv6.Message) error
+
 	// these two fields are not guarded by mu
 	udpAddrPool sync.Pool
 	msgsPool    sync.Pool
 
 	blackhole4 bool
 	blackhole6 bool
+}
+
+// UDPGSOStats reports the current per-family transmit GSO state and fallback
+// outcomes. Counters reset when the userspace device is restarted.
+type UDPGSOStats struct {
+	IPv4Enabled       bool
+	IPv6Enabled       bool
+	IPv4Fallbacks     uint64
+	IPv4RetryFailures uint64
+	IPv6Fallbacks     uint64
+	IPv6RetryFailures uint64
+}
+
+// UDPGSOStats returns a consistent snapshot of the GSO fallback state.
+func (s *StdNetBind) UDPGSOStats() UDPGSOStats {
+	s.mu.Lock()
+	stats := UDPGSOStats{IPv4Enabled: s.ipv4TxOffload, IPv6Enabled: s.ipv6TxOffload}
+	s.mu.Unlock()
+	stats.IPv4Fallbacks = s.ipv4GSOFallbacks.Load()
+	stats.IPv4RetryFailures = s.ipv4GSORetryFailures.Load()
+	stats.IPv6Fallbacks = s.ipv6GSOFallbacks.Load()
+	stats.IPv6RetryFailures = s.ipv6GSORetryFailures.Load()
+	return stats
 }
 
 func NewStdNetBind() Bind {
@@ -382,8 +416,13 @@ func (s *StdNetBind) Send(bufs [][]byte, endpoint Endpoint) error {
 retry:
 	if offload {
 		n := coalesceMessages(ua, endpoint.(*StdNetEndpoint), bufs, *msgs, setGSOSize)
-		err = s.send(conn, br, (*msgs)[:n])
+		err = s.writeBatch(conn, br, (*msgs)[:n])
 		if err != nil && offload && errShouldDisableUDPGSO(err) {
+			if is6 {
+				s.ipv6GSOFallbacks.Add(1)
+			} else {
+				s.ipv4GSOFallbacks.Add(1)
+			}
 			offload = false
 			s.mu.Lock()
 			if is6 {
@@ -401,12 +440,26 @@ retry:
 			(*msgs)[i].Buffers[0] = bufs[i]
 			setSrcControl(&(*msgs)[i].OOB, endpoint.(*StdNetEndpoint))
 		}
-		err = s.send(conn, br, (*msgs)[:len(bufs)])
+		err = s.writeBatch(conn, br, (*msgs)[:len(bufs)])
+		if retried && err != nil {
+			if is6 {
+				s.ipv6GSORetryFailures.Add(1)
+			} else {
+				s.ipv4GSORetryFailures.Add(1)
+			}
+		}
 	}
 	if retried {
 		return ErrUDPGSODisabled{onLaddr: conn.LocalAddr().String(), RetryErr: err}
 	}
 	return err
+}
+
+func (s *StdNetBind) writeBatch(conn *net.UDPConn, pc batchWriter, msgs []ipv6.Message) error {
+	if s.sendBatch != nil {
+		return s.sendBatch(conn, pc, msgs)
+	}
+	return s.send(conn, pc, msgs)
 }
 
 func (s *StdNetBind) send(conn *net.UDPConn, pc batchWriter, msgs []ipv6.Message) error {

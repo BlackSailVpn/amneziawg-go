@@ -133,6 +133,19 @@ type Device struct {
 	}
 }
 
+// UDPGSOStats reports transport fallback state when the configured bind
+// supports it. The boolean is false for custom binds.
+func (device *Device) UDPGSOStats() (conn.UDPGSOStats, bool) {
+	device.net.RLock()
+	bind := device.net.bind
+	device.net.RUnlock()
+	statsBind, ok := bind.(interface{ UDPGSOStats() conn.UDPGSOStats })
+	if !ok {
+		return conn.UDPGSOStats{}, false
+	}
+	return statsBind.UDPGSOStats(), true
+}
+
 // deviceState represents the state of a Device.
 // There are three states: down, up, closed.
 // Transitions:

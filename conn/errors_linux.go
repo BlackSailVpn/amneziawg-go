@@ -22,7 +22,11 @@ func errShouldDisableUDPGSO(err error) bool {
 		// https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/udp.c?h=v6.2&id=c9c3395d5e3dcc6daee66c6908354d47bf98cb0c#n942
 		// If gso_size + udp + ip headers > fragment size EINVAL is returned.
 		// It occurs when the peer mtu + wg headers is greater than path mtu.
-		return serr.Err == unix.EIO || serr.Err == unix.EINVAL
+		// EMSGSIZE is returned when the NIC or path cannot accept a UDP_SEGMENT
+		// datagram. Retrying the same encrypted packets without GSO is safe and
+		// avoids dropping the whole batch on hosts that expose UDP_SEGMENT but do
+		// not support it on the selected egress device.
+		return serr.Err == unix.EIO || serr.Err == unix.EINVAL || serr.Err == unix.EMSGSIZE
 	}
 	return false
 }
